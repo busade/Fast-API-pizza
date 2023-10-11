@@ -1,0 +1,104 @@
+from fastapi import APIRouter, status, Depends
+from database import Session,engine 
+from schemas import SignUpModel, LoginModel
+from model import User
+from fastapi.exceptions import HTTPException
+from werkzeug.security import check_password_hash, generate_password_hash
+from fastapi_jwt_auth import AuthJWT
+from fastapi.encoders import jsonable_encoder
+auth_router = APIRouter(
+    prefix="/auth",
+    tags=["auth"],
+)
+
+session = Session(bind=engine)
+
+@auth_router.get("/")
+async def hello_world(Authorize: AuthJWT=Depends()):
+    try:
+        Authorize.jwt_required()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail= "Invalid Token")
+    return {"message": "Hello auth"}
+
+
+@auth_router.post("/signup", status_code=status.HTTP_201_CREATED)
+async def signup(user:SignUpModel):
+    """
+        ## Create a new User
+        This endpoint allows you to create a new user, and requires
+        ```
+            username : str
+            email: str
+            password: str
+            is_staff: bool
+        ```
+
+    """
+    db_email= session.query(User).filter(User.email==user.email).first()
+    if db_email is not None:
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already exists")
+    
+    db_username= session.query(User).filter(User.username==user.username).first()
+    if db_username is not None:
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already exists")
+    
+
+    new_user=User(
+        username= user.username,
+        email = user.email,
+        password = generate_password_hash(user.password),
+        is_active= user.is_active,
+        is_staff =user.is_staff
+    )
+    
+    session.add(new_user)
+    session.commit()
+    return new_user
+
+# login route
+
+@auth_router.post('/login')
+async def login(user:LoginModel,Authorize:AuthJWT=Depends()):
+    """
+        ## Generaye a Jwt Token
+        This endqpoint allows you to generate a jwt, and requires
+    ```    
+      username : str
+      password: str
+    ```
+    and returns a token pair
+    ```
+        access_token : str
+        refresh_token : str
+    ```
+    """
+    db_user = session.query(User).filter(User.username==user.username).first()
+    
+    if db_user and check_password_hash(db_user.password, user.password):
+        access_token = Authorize.create_access_token(subject=db_user.username)
+        refresh_token = Authorize.create_refresh_token(subject=db_user.username)
+
+        response = {
+            "access_token" : access_token,
+            "refresh_token" : refresh_token
+        }
+
+        return jsonable_encoder(response)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail= "Invalid Username or Password")
+
+@auth_router.get('/refresh')
+async def refresh(Authorize:AuthJWT=Depends()):
+    """
+        ## Create a fresh token and this requires a refresh token
+    """
+    try:
+        Authorize.jwt_refresh_token_required()
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Please a valid refresh token")
+    current_user= Authorize.get_jwt_subject()
+    access_token= Authorize.create_access_token(subject=current_user)
+
+    return jsonable_encoder({'access_token':access_token})
